@@ -74,10 +74,24 @@ __device__ float distanceBetweenColorsCuda(uint8_t r1, uint8_t g1, uint8_t b1, u
 	return sqrt(d);
 }
 
-uint16_t wrapValue(uint16_t a, uint16_t b) {
+inline uint32_t wrapValue(int32_t a, int32_t b) {
 	if (a < 0) return b + a;
 	else if (a >= b) return abs(b - a);
 	return a;
+}
+
+inline __device__ uint32_t wrapValueCuda(int32_t a, int32_t b) {
+	if (a < 0) return b + a;
+	else if (a >= b) return abs(b - a);
+	return a;
+}
+
+inline int getIndexFromXY(int x, int y, int16_t channels, int imageWidth) {
+	return (x * channels) + (y * channels * imageWidth);
+}
+
+inline __device__ int getIndexFromXYCuda(int x, int y, int16_t channels, uint16_t imageWidth) {
+	return (x * channels) + (y * channels * imageWidth);
 }
 
 double computeAverage(std::vector<double>& v)
@@ -124,6 +138,8 @@ unsigned char* synthetiseImage(Image& sampleImage, Image& preSynImage, uint8_t n
 
 	uint8_t neighborhoodHalf = (neighborhoodSize / 2);
 
+	int pixelSynIdx = 0, pixelSampleIdx = 0;
+
 	// For every pixel
 	for (int y = 0; y < preSynImage.height; y++)
 	{
@@ -143,22 +159,9 @@ unsigned char* synthetiseImage(Image& sampleImage, Image& preSynImage, uint8_t n
 					// Check neighbors - From upper corner to the pixel itself
 					for (int nY = -neighborhoodHalf; nY <= 0; nY++)
 					{
-
-						neighborSynY = y + nY;
-						if (neighborSynY < 0) {
-							neighborSynY = preSynImage.height + neighborSynY;
-						}
-						else if (neighborSynY >= preSynImage.height) {
-							neighborSynY = abs(preSynImage.height - neighborSynY);
-						}
-
-						neighborSampleY = sY + nY;
-						if (neighborSampleY < 0) {
-							neighborSampleY = sampleImage.height + neighborSampleY;
-						}
-						else if (neighborSampleY >= sampleImage.height) {
-							neighborSampleY = abs(sampleImage.height - neighborSampleY);
-						}
+						
+						neighborSynY = wrapValue(y + nY, preSynImage.height);
+						neighborSampleY = wrapValue(sY + nY, sampleImage.height);
 
 						for (int nX = -neighborhoodHalf; nX <= neighborhoodHalf; nX++)
 						{
@@ -166,36 +169,20 @@ unsigned char* synthetiseImage(Image& sampleImage, Image& preSynImage, uint8_t n
 								break;
 							}
 
-							neighborSynX = x + nX;
-							if (neighborSynX < 0) {
-								neighborSynX = preSynImage.width + neighborSynX;
-							}
-							else if (neighborSynX >= preSynImage.width) {
-								neighborSynX = abs(preSynImage.width - neighborSynX);
-							}
+							neighborSynX = wrapValue(x + nX, preSynImage.width);
+							neighborSampleX = wrapValue(sX + nX, sampleImage.width);
 
-							neighborSampleX = sX + nX;
-							if (neighborSampleX < 0) {
-								neighborSampleX = sampleImage.width + neighborSampleX;
-							}
-							else if (neighborSampleX >= sampleImage.width) {
-								neighborSampleX = abs(sampleImage.width - neighborSampleX);
-							}
-
-							// Compare pixels from sample with preSyn
-							// 0 - R // 1 - G // 2 - B
-
-							int newImagePos = neighborSynX * preSynImage.channelsQtd + (neighborSynY * preSynImage.width * preSynImage.channelsQtd);
-							int tempPos = neighborSampleX * sampleImage.channelsQtd + (neighborSampleY * sampleImage.width * sampleImage.channelsQtd);
+							pixelSynIdx = getIndexFromXY(neighborSynX, neighborSynY, preSynImage.channelsQtd, preSynImage.width);
+							pixelSampleIdx = getIndexFromXY(neighborSampleX, neighborSampleY, sampleImage.channelsQtd, sampleImage.width);
 
 							float dist = distanceBetweenColors(
-								synthetizedImage[newImagePos + 0],
-								synthetizedImage[newImagePos + 1],
-								synthetizedImage[newImagePos + 2],
+								synthetizedImage[pixelSynIdx + 0],
+								synthetizedImage[pixelSynIdx + 1],
+								synthetizedImage[pixelSynIdx + 2],
 
-								sampleImage.data[tempPos + 0],
-								sampleImage.data[tempPos + 1],
-								sampleImage.data[tempPos + 2]
+								sampleImage.data[pixelSampleIdx + 0],
+								sampleImage.data[pixelSampleIdx + 1],
+								sampleImage.data[pixelSampleIdx + 2]
 							);
 
 							pontuation += dist;
@@ -214,11 +201,11 @@ unsigned char* synthetiseImage(Image& sampleImage, Image& preSynImage, uint8_t n
 			}
 			// End of sample check
 
-			int pixelPos = x * preSynImage.channelsQtd + (y * preSynImage.width * preSynImage.channelsQtd);
-			int winerPixelPos = winnerPixelPosX * sampleImage.channelsQtd + (winnerPixelPosY * sampleImage.width * sampleImage.channelsQtd);
-			synthetizedImage[pixelPos + 0] = sampleImage.data[winerPixelPos + 0];
-			synthetizedImage[pixelPos + 1] = sampleImage.data[winerPixelPos + 1];
-			synthetizedImage[pixelPos + 2] = sampleImage.data[winerPixelPos + 2];
+			pixelSynIdx = getIndexFromXY(x, y, preSynImage.channelsQtd, preSynImage.width);
+			pixelSampleIdx = getIndexFromXY(winnerPixelPosX, winnerPixelPosY, sampleImage.channelsQtd, sampleImage.width);
+			synthetizedImage[pixelSynIdx + 0] = sampleImage.data[pixelSampleIdx + 0];
+			synthetizedImage[pixelSynIdx + 1] = sampleImage.data[pixelSampleIdx + 1];
+			synthetizedImage[pixelSynIdx + 2] = sampleImage.data[pixelSampleIdx + 2];
 
 		}
 	}
@@ -239,34 +226,22 @@ __global__ void synthetiseImageKernel(
 	int16_t preSynWidth, int16_t preSynHeight, int16_t preSynChannels, uint8_t* synthetizedData,
 	int16_t neighborhoodHalf, float* pontuationArray, int16_t x, int16_t y) {
 
-	/*int arrSize = preSynWidth * preSynHeight * 3;
-	unsigned char* newImage = new unsigned char[arrSize];
-
-	for (int i = 0; i < arrSize; i++)
-	{
-		newImage[i] = preSynData[i];
-	}*/
-
-	int32_t neighborSynX = 0, neighborSynY = 0;
-	int32_t neighborSampleX = 0, neighborSampleY = 0;
-
-	float pontuation = 0;
-
 	int16_t sX = threadIdx.x + blockIdx.x * blockDim.x;
 	int16_t sY = threadIdx.y + blockIdx.y * blockDim.y;
 
 	if (sX >= sampleWidth || sY >= sampleHeight) return;
 
+	int32_t neighborSynX = 0, neighborSynY = 0;
+	int32_t neighborSampleX = 0, neighborSampleY = 0;
+	int pixelSynIdx = 0, pixelSampleIdx = 0;
+
+	float pontuation = 0;
+
 	for (int nY = -neighborhoodHalf; nY <= 0; nY++)
 	{
 
-		neighborSynY = y + nY;
-		if (neighborSynY < 0) neighborSynY = preSynHeight + neighborSynY;
-		else if (neighborSynY >= preSynHeight) neighborSynY = abs(preSynHeight - neighborSynY);
-
-		neighborSampleY = sY + nY;
-		if (neighborSampleY < 0) neighborSampleY = sampleHeight + neighborSampleY;
-		else if (neighborSampleY >= sampleHeight) neighborSampleY = abs(sampleHeight - neighborSampleY);
+		neighborSynY = wrapValueCuda(y + nY, preSynHeight);
+		neighborSampleY = wrapValueCuda(sY + nY, sampleHeight);
 
 		for (int nX = -neighborhoodHalf; nX <= neighborhoodHalf; nX++)
 		{
@@ -274,28 +249,19 @@ __global__ void synthetiseImageKernel(
 				break;
 			}
 
-			neighborSynX = x + nX;
-			if (neighborSynX < 0) neighborSynX = preSynWidth + neighborSynX;
-			else if (neighborSynX >= preSynWidth) neighborSynX = abs(preSynWidth - neighborSynX);
+			neighborSynX = wrapValueCuda(x + nX, preSynWidth);
+			neighborSampleX = wrapValueCuda(sX + nX, sampleWidth);
 
-			neighborSampleX = sX + nX;
-			if (neighborSampleX < 0) neighborSampleX = sampleWidth + neighborSampleX;
-			else if (neighborSampleX >= sampleWidth) neighborSampleX = abs(sampleWidth - neighborSampleX);
-
-			// Compare pixels from sample with preSyn
-			// 0 - R // 1 - G // 2 - B
-
-			int newImagePos = neighborSynX * preSynChannels + (neighborSynY * preSynWidth * preSynChannels);
-			int tempPos = neighborSampleX * sampleChannels + (neighborSampleY * sampleWidth * sampleChannels);
+			pixelSynIdx = getIndexFromXYCuda(neighborSynX, neighborSynY, preSynChannels, preSynWidth);
+			pixelSampleIdx = getIndexFromXYCuda(neighborSampleX, neighborSampleY, sampleChannels, sampleWidth);
 
 			float dist = distanceBetweenColorsCuda(
-				synthetizedData[newImagePos + 0],
-				synthetizedData[newImagePos + 1],
-				synthetizedData[newImagePos + 2],
-
-				sampleData[tempPos + 0],
-				sampleData[tempPos + 1],
-				sampleData[tempPos + 2]
+				synthetizedData[pixelSynIdx + 0],
+				synthetizedData[pixelSynIdx + 1],
+				synthetizedData[pixelSynIdx + 2],
+				sampleData[pixelSampleIdx + 0],
+				sampleData[pixelSampleIdx + 1],
+				sampleData[pixelSampleIdx + 2]
 			);
 
 			pontuation += dist;
@@ -580,7 +546,7 @@ cudaError_t synthetiseImageCuda(uint16_t sampleWidth, uint16_t sampleHeight, uin
 
 			int winnerPixelPos = winnerPontuationItt * sampleChannels;
 
-			int pixelPos = x * preSynChannels + (y * preSynWidth * preSynChannels);
+			int pixelPos = getIndexFromXY(x, y, preSynChannels, preSynWidth);
 			synthetizedData[pixelPos + 0] = sampleData[winnerPixelPos + 0];
 			synthetizedData[pixelPos + 1] = sampleData[winnerPixelPos + 1];
 			synthetizedData[pixelPos + 2] = sampleData[winnerPixelPos + 2];
