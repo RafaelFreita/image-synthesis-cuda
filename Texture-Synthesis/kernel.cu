@@ -5,9 +5,14 @@
 #include <stdio.h>
 #include <iterator>
 #include <limits>
+#include <numeric>
+#include <string>
 
 #include <stb_image.h>
 #include "stb_image_write.h"
+
+#include "Timer.hpp"
+#include "cxxopts.hpp"
 
 struct Image {
 	int width, height, channelsQtd;
@@ -51,6 +56,8 @@ struct Image {
 
 };
 
+#pragma region Helpers
+
 float distanceBetweenColors(uint8_t r1, uint8_t g1, uint8_t b1, uint8_t r2, uint8_t g2, uint8_t b2) {
 	int16_t r = r2 - r1;
 	int16_t g = g2 - g1;
@@ -73,6 +80,24 @@ uint16_t wrapValue(uint16_t a, uint16_t b) {
 	return a;
 }
 
+double computeAverage(std::vector<double>& v)
+{
+	size_t n = v.size();
+	if (n == 0)
+		return 0.0;
+
+	return std::accumulate(v.begin(), v.end(), 0.0) / n;
+}
+
+double computeMedian(std::vector<double>& v)
+{
+	size_t n = v.size() / 2;
+	std::nth_element(v.begin(), v.begin() + n, v.end()); // Like std::sort, but only sorts until nth element
+	return v[n];
+}
+
+#pragma endregion
+
 #pragma region CPU
 
 unsigned char* synthetiseImage(Image& sampleImage, Image& preSynImage, uint8_t neighborhoodSize) {
@@ -83,15 +108,15 @@ unsigned char* synthetiseImage(Image& sampleImage, Image& preSynImage, uint8_t n
 	}
 
 	int arrSize = preSynImage.width * preSynImage.height * 3;
-	unsigned char* newImage = new unsigned char[arrSize];
+	unsigned char* synthetizedImage = new unsigned char[arrSize];
 
 	for (int i = 0; i < arrSize; i++)
 	{
-		newImage[i] = preSynImage.data[i];
+		synthetizedImage[i] = preSynImage.data[i];
 	}
 
-	int imageTempX = 0, imageTempY = 0;
-	int tempX = 0, tempY = 0;
+	int neighborSynX = 0, neighborSynY = 0;
+	int neighborSampleX = 0, neighborSampleY = 0;
 
 	uint16_t winnerPixelPosX, winnerPixelPosY;
 	float winnerPontuation;
@@ -105,7 +130,7 @@ unsigned char* synthetiseImage(Image& sampleImage, Image& preSynImage, uint8_t n
 		for (int x = 0; x < preSynImage.width; x++)
 		{
 
-			winnerPontuation = INT_MAX;
+			winnerPontuation = std::numeric_limits<float>::max();
 
 			// For every pixel in sample image
 			for (int sY = 0; sY < sampleImage.height; sY++)
@@ -119,20 +144,20 @@ unsigned char* synthetiseImage(Image& sampleImage, Image& preSynImage, uint8_t n
 					for (int nY = -neighborhoodHalf; nY <= 0; nY++)
 					{
 
-						imageTempY = y + nY;
-						if (imageTempY < 0) {
-							imageTempY = preSynImage.height + imageTempY;
+						neighborSynY = y + nY;
+						if (neighborSynY < 0) {
+							neighborSynY = preSynImage.height + neighborSynY;
 						}
-						else if (imageTempY >= preSynImage.height) {
-							imageTempY = abs(preSynImage.height - imageTempY);
+						else if (neighborSynY >= preSynImage.height) {
+							neighborSynY = abs(preSynImage.height - neighborSynY);
 						}
 
-						tempY = sY + nY;
-						if (tempY < 0) {
-							tempY = sampleImage.height + tempY;
+						neighborSampleY = sY + nY;
+						if (neighborSampleY < 0) {
+							neighborSampleY = sampleImage.height + neighborSampleY;
 						}
-						else if (tempY >= sampleImage.height) {
-							tempY = abs(sampleImage.height - tempY);
+						else if (neighborSampleY >= sampleImage.height) {
+							neighborSampleY = abs(sampleImage.height - neighborSampleY);
 						}
 
 						for (int nX = -neighborhoodHalf; nX <= neighborhoodHalf; nX++)
@@ -141,33 +166,32 @@ unsigned char* synthetiseImage(Image& sampleImage, Image& preSynImage, uint8_t n
 								break;
 							}
 
-							imageTempX = x + nX;
-							if (imageTempX < 0) {
-								imageTempX = preSynImage.width + imageTempX;
+							neighborSynX = x + nX;
+							if (neighborSynX < 0) {
+								neighborSynX = preSynImage.width + neighborSynX;
 							}
-							else if (imageTempX >= preSynImage.width) {
-								imageTempX = abs(preSynImage.width - imageTempX);
+							else if (neighborSynX >= preSynImage.width) {
+								neighborSynX = abs(preSynImage.width - neighborSynX);
 							}
 
-							tempX = sX + nX;
-							if (tempX < 0) {
-								tempX = sampleImage.width + tempX;
+							neighborSampleX = sX + nX;
+							if (neighborSampleX < 0) {
+								neighborSampleX = sampleImage.width + neighborSampleX;
 							}
-							else if (tempX >= sampleImage.width) {
-								tempX = abs(sampleImage.width - tempX);
+							else if (neighborSampleX >= sampleImage.width) {
+								neighborSampleX = abs(sampleImage.width - neighborSampleX);
 							}
 
 							// Compare pixels from sample with preSyn
 							// 0 - R // 1 - G // 2 - B
-							// Multiplying for 3 because every pixel has 3 components
 
-							int newImagePos = imageTempX * preSynImage.channelsQtd + (imageTempY * preSynImage.width * preSynImage.channelsQtd);
-							int tempPos = tempX * sampleImage.channelsQtd + (tempY * sampleImage.width * sampleImage.channelsQtd);
+							int newImagePos = neighborSynX * preSynImage.channelsQtd + (neighborSynY * preSynImage.width * preSynImage.channelsQtd);
+							int tempPos = neighborSampleX * sampleImage.channelsQtd + (neighborSampleY * sampleImage.width * sampleImage.channelsQtd);
 
 							float dist = distanceBetweenColors(
-								newImage[newImagePos + 0],
-								newImage[newImagePos + 1],
-								newImage[newImagePos + 2],
+								synthetizedImage[newImagePos + 0],
+								synthetizedImage[newImagePos + 1],
+								synthetizedImage[newImagePos + 2],
 
 								sampleImage.data[tempPos + 0],
 								sampleImage.data[tempPos + 1],
@@ -179,7 +203,7 @@ unsigned char* synthetiseImage(Image& sampleImage, Image& preSynImage, uint8_t n
 					}
 					// End of neighbors
 
-					// Assign new winner if pontution was less
+					// Assign new winner if pontution was smaller
 					if (pontuation < winnerPontuation) {
 						winnerPixelPosX = sX;
 						winnerPixelPosY = sY;
@@ -188,18 +212,18 @@ unsigned char* synthetiseImage(Image& sampleImage, Image& preSynImage, uint8_t n
 
 				}
 			}
-
 			// End of sample check
+
 			int pixelPos = x * preSynImage.channelsQtd + (y * preSynImage.width * preSynImage.channelsQtd);
 			int winerPixelPos = winnerPixelPosX * sampleImage.channelsQtd + (winnerPixelPosY * sampleImage.width * sampleImage.channelsQtd);
-			newImage[pixelPos + 0] = sampleImage.data[winerPixelPos + 0];
-			newImage[pixelPos + 1] = sampleImage.data[winerPixelPos + 1];
-			newImage[pixelPos + 2] = sampleImage.data[winerPixelPos + 2];
+			synthetizedImage[pixelPos + 0] = sampleImage.data[winerPixelPos + 0];
+			synthetizedImage[pixelPos + 1] = sampleImage.data[winerPixelPos + 1];
+			synthetizedImage[pixelPos + 2] = sampleImage.data[winerPixelPos + 2];
 
 		}
 	}
 
-	return newImage;
+	return synthetizedImage;
 }
 
 #pragma endregion
@@ -223,24 +247,26 @@ __global__ void synthetiseImageKernel(
 		newImage[i] = preSynData[i];
 	}*/
 
-	int32_t imageTempX = 0, imageTempY = 0;
-	int32_t tempX = 0, tempY = 0;
+	int32_t neighborSynX = 0, neighborSynY = 0;
+	int32_t neighborSampleX = 0, neighborSampleY = 0;
 
 	float pontuation = 0;
 
 	int16_t sX = threadIdx.x + blockIdx.x * blockDim.x;
 	int16_t sY = threadIdx.y + blockIdx.y * blockDim.y;
 
+	if (sX >= sampleWidth || sY >= sampleHeight) return;
+
 	for (int nY = -neighborhoodHalf; nY <= 0; nY++)
 	{
 
-		imageTempY = y + nY;
-		if (imageTempY < 0) imageTempY = preSynHeight + imageTempY;
-		else if (imageTempY >= preSynHeight) imageTempY = abs(preSynHeight - imageTempY);
+		neighborSynY = y + nY;
+		if (neighborSynY < 0) neighborSynY = preSynHeight + neighborSynY;
+		else if (neighborSynY >= preSynHeight) neighborSynY = abs(preSynHeight - neighborSynY);
 
-		tempY = sY + nY;
-		if (tempY < 0) tempY = sampleHeight + tempY;
-		else if (tempY >= sampleHeight) tempY = abs(sampleHeight - tempY);
+		neighborSampleY = sY + nY;
+		if (neighborSampleY < 0) neighborSampleY = sampleHeight + neighborSampleY;
+		else if (neighborSampleY >= sampleHeight) neighborSampleY = abs(sampleHeight - neighborSampleY);
 
 		for (int nX = -neighborhoodHalf; nX <= neighborhoodHalf; nX++)
 		{
@@ -248,19 +274,19 @@ __global__ void synthetiseImageKernel(
 				break;
 			}
 
-			imageTempX = x + nX;
-			if (imageTempX < 0) imageTempX = preSynWidth + imageTempX;
-			else if (imageTempX >= preSynWidth) imageTempX = abs(preSynWidth - imageTempX);
+			neighborSynX = x + nX;
+			if (neighborSynX < 0) neighborSynX = preSynWidth + neighborSynX;
+			else if (neighborSynX >= preSynWidth) neighborSynX = abs(preSynWidth - neighborSynX);
 
-			tempX = sX + nX;
-			if (tempX < 0) tempX = sampleWidth + tempX;
-			else if (tempX >= sampleWidth) tempX = abs(sampleWidth - tempX);
+			neighborSampleX = sX + nX;
+			if (neighborSampleX < 0) neighborSampleX = sampleWidth + neighborSampleX;
+			else if (neighborSampleX >= sampleWidth) neighborSampleX = abs(sampleWidth - neighborSampleX);
 
 			// Compare pixels from sample with preSyn
 			// 0 - R // 1 - G // 2 - B
 
-			int newImagePos = imageTempX * preSynChannels + (imageTempY * preSynWidth * preSynChannels);
-			int tempPos = tempX * sampleChannels + (tempY * sampleWidth * sampleChannels);
+			int newImagePos = neighborSynX * preSynChannels + (neighborSynY * preSynWidth * preSynChannels);
+			int tempPos = neighborSampleX * sampleChannels + (neighborSampleY * sampleWidth * sampleChannels);
 
 			float dist = distanceBetweenColorsCuda(
 				synthetizedData[newImagePos + 0],
@@ -283,53 +309,157 @@ __global__ void synthetiseImageKernel(
 
 #pragma endregion
 
-int main()
+int main(int argc, char* argv[])
 {
+
+#pragma region Command Line Options
+	cxxopts::Options options("Cuda Image Synthesis", "Synthetyse an image using a sample and a pre-synthesis image with Cuda. \nRafael de Freitas, 2020\n");
+
+	options.add_options()
+		("h,help", "Print usage")
+		("c,cpu", "Run on CPU", cxxopts::value<bool>()->default_value("false"))
+		("g,gpu", "Run on GPU", cxxopts::value<bool>()->default_value("true"))
+		("t,threads", "How many threads per block", cxxopts::value<int>()->default_value("16"))
+		("n,neighborhood", "Neighborhood size - Must be odd", cxxopts::value<int>()->default_value("5"))
+		("s,sample", "Sample image path", cxxopts::value<std::string>()->default_value(""))
+		("p,presyn", "Pre-synthesis image path", cxxopts::value<std::string>()->default_value(""))
+		("r,result", "Result image path WITHOUT EXTENSION", cxxopts::value<std::string>()->default_value(""))
+		("i,itt", "How many tests to run", cxxopts::value<int>()->default_value("1"))
+		;
+
+	auto optionsResult = options.parse(argc, argv);
+
+	if (optionsResult.count("help"))
+	{
+		std::cout << options.help() << std::endl;
+		return 0;
+	}
+
+	const bool runCPU = optionsResult["cpu"].as<bool>();
+	const bool runGPU = optionsResult["gpu"].as<bool>();
+
+	const std::string pathSample = optionsResult["sample"].as<std::string>();
+	const std::string pathPresyn = optionsResult["presyn"].as<std::string>();
+	const std::string pathResult = optionsResult["result"].as<std::string>();
+
+	const int neighborhoodSize = optionsResult["neighborhood"].as<int>();
+	const int threadsPerBlock = optionsResult["threads"].as<int>();
+
+	const int testIterations = optionsResult["itt"].as<int>();
+
+	//
+	// Checking requirements
+	//
+	if (pathSample == "") {
+		printf("ERROR Can't run without sample path! \n");
+		return 1;
+	}
+
+	if (pathPresyn == "") {
+		printf("ERROR Can't run without pre-synthesis path! \n");
+		return 1;
+	}
+
+	if (pathResult == "") {
+		printf("ERROR Can't run without result path! \n");
+		return 1;
+	}
+
+	if (neighborhoodSize % 2 == 0) {
+		printf("ERROR NeighborhoodSize must be odd!\n");
+		return 1;
+	}
+
+#pragma endregion
+
 	//
 	// Loading images
 	//
 	stbi_set_flip_vertically_on_load(true);
 
 	Image sampleImg;
-	sampleImg.Load("images/flowers256.png");
+	sampleImg.Load(pathSample.c_str());
 
 	Image preSynImg;
-	preSynImg.Load("images/preSynFlowers256.png");
+	preSynImg.Load(pathPresyn.c_str());
 
-	uint8_t neighborhoodSize = 5;
-	/*unsigned char* synData = synthetiseImage(sampleImg, preSynImg, neighborhoodSize);
-	if (synData == nullptr) {
-		system("pause");
-		return 1;
-	}*/
+	Timer timer = Timer();
+	std::vector<double> execTimesCPU, execTimesGPU;
 
-	Image synthetizedImage;
-	synthetizedImage.width = preSynImg.width;
-	synthetizedImage.height = preSynImg.height;
-	synthetizedImage.channelsQtd = 3;
-	synthetizedImage.AllocateDataArray();
+	if (runCPU) {
+		unsigned char* synData;
+
+		for (int i = 0; i < testIterations; i++) {
+			timer.start();
+			synData = synthetiseImage(sampleImg, preSynImg, neighborhoodSize);
+			if (synData == nullptr) {
+				system("pause");
+				return 1;
+			}
+			timer.finish();
+			execTimesCPU.push_back(timer.getElapsedTimeMs());
+		}
+
+		Image synthetizedImageCPU;
+		synthetizedImageCPU.width = preSynImg.width;
+		synthetizedImageCPU.height = preSynImg.height;
+		synthetizedImageCPU.channelsQtd = 3;
+		synthetizedImageCPU.data = synData;
+
+		if(!runGPU)
+			synthetizedImageCPU.WriteImage((pathResult + ".png").c_str());
+		else
+			synthetizedImageCPU.WriteImage((pathResult + "-CPU.png").c_str());
+
+		printf("CPU Average Time (ms): %f\n", computeAverage(execTimesCPU));
+		printf("CPU Median Time (ms): %f\n", computeMedian(execTimesCPU));
+		printf("\n");
+	}
+
+	if (runGPU) {
+		Image synthetizedImageGPU;
+		synthetizedImageGPU.width = preSynImg.width;
+		synthetizedImageGPU.height = preSynImg.height;
+		synthetizedImageGPU.channelsQtd = 3;
+		synthetizedImageGPU.AllocateDataArray();
 
 #pragma region Cuda calls
-	cudaError_t cudaStatus = synthetiseImageCuda(
-		sampleImg.width, sampleImg.height, sampleImg.channelsQtd, sampleImg.data,
-		preSynImg.width, preSynImg.height, preSynImg.channelsQtd, preSynImg.data,
-		5, synthetizedImage.data, 16U
-	);
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "synthetizeCuda failed!\n");
-		system("pause");
-		return 1;
-	}
+		for (int i = 0; i < testIterations; i++) {
+			timer.start();
+			cudaError_t cudaStatus = synthetiseImageCuda(
+				sampleImg.width, sampleImg.height, sampleImg.channelsQtd, sampleImg.data,
+				preSynImg.width, preSynImg.height, preSynImg.channelsQtd, preSynImg.data,
+				5, synthetizedImageGPU.data, threadsPerBlock
+			);
+			timer.finish();
 
-	cudaStatus = cudaDeviceReset();
-	if (cudaStatus != cudaSuccess) {
-		fprintf(stderr, "cudaDeviceReset failed!\n");
-		system("pause");
-		return 1;
-	}
+			execTimesGPU.push_back(timer.getElapsedTimeMs());
+
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "synthetizeCuda failed!\n");
+				system("pause");
+				return 1;
+			}
+
+			cudaStatus = cudaDeviceReset();
+			if (cudaStatus != cudaSuccess) {
+				fprintf(stderr, "cudaDeviceReset failed!\n");
+				system("pause");
+				return 1;
+			}
+		}
+
+		if (!runCPU)
+			synthetizedImageGPU.WriteImage((pathResult + ".png").c_str());
+		else
+			synthetizedImageGPU.WriteImage((pathResult + "-GPU.png").c_str());
+
+		printf("GPU Average Time (ms): %f\n", computeAverage(execTimesGPU));
+		printf("GPU Median Time (ms): %f\n", computeMedian(execTimesGPU));
+		printf("\n");
 #pragma endregion
 
-	synthetizedImage.WriteImage("images/resultFlowers256.png");
+	}
 
 	//
 	// Cleanup
@@ -360,20 +490,19 @@ cudaError_t synthetiseImageCuda(uint16_t sampleWidth, uint16_t sampleHeight, uin
 		synthetizedData[i] = preSynData[i];
 	}
 
+	uint8_t neighborhoodHalf = neighborhood / 2;
 	cudaError_t cudaStatus;
 
-	uint8_t neighborhoodHalf = neighborhood / 2;
+#pragma region Cuda Memory Allocation
 
-#pragma region Cuda Stuff
-
-	// Choose which GPU to run on, change this on a multi-GPU system.
+	// Set Cuda device
 	cudaStatus = cudaSetDevice(0);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaSetDevice failed!  Do you have a CUDA-capable GPU installed?");
 		goto Error;
 	}
 
-	// Allocate GPU buffers for three vectors (two input, one output)    .
+	// Alocate arrays in GPU
 	cudaStatus = cudaMalloc((void**)& cuda_synthetizedData, preSynSizeBytes);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMalloc failed!");
@@ -392,12 +521,14 @@ cudaError_t synthetiseImageCuda(uint16_t sampleWidth, uint16_t sampleHeight, uin
 		goto Error;
 	}
 
+	// Copy sample data
 	cudaStatus = cudaMemcpy(cuda_sampleData, sampleData, sampleSizeBytes, cudaMemcpyHostToDevice);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!");
 		goto Error;
 	}
 
+	// Copy synthesis data
 	cudaStatus = cudaMemcpy(cuda_synthetizedData, synthetizedData, preSynSizeBytes, cudaMemcpyHostToDevice);
 	if (cudaStatus != cudaSuccess) {
 		fprintf(stderr, "cudaMemcpy failed!");
@@ -407,14 +538,15 @@ cudaError_t synthetiseImageCuda(uint16_t sampleWidth, uint16_t sampleHeight, uin
 #pragma endregion
 
 	dim3 threadsPerBlockDim(threadsPerBlock, threadsPerBlock);
-	dim3 numBlocks(sampleWidth / threadsPerBlockDim.x, sampleHeight / threadsPerBlockDim.y);
+	// Adding one block on each dimension for non-square images. The boundary check is inside the kernel.
+	dim3 numBlocks(sampleWidth / threadsPerBlockDim.x + 1, sampleHeight / threadsPerBlockDim.y + 1);
 
 	for (int y = 0; y < preSynHeight; y++)
 	{
 		for (int x = 0; x < preSynWidth; x++)
 		{
 
-			synthetiseImageKernel << <numBlocks, threadsPerBlockDim >> > (
+			synthetiseImageKernel << < numBlocks, threadsPerBlockDim >> > (
 				sampleWidth, sampleHeight, sampleChannels, cuda_sampleData,
 				preSynWidth, preSynHeight, preSynChannels, cuda_synthetizedData,
 				neighborhoodHalf, cuda_pontuationsArray, x, y);
